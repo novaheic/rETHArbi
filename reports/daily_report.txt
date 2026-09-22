@@ -1,0 +1,26 @@
+rETH BASIS REPORT
+=================
+Period:
+2026-09-22
+Protocol rate:
+1.1722629149 ETH/rETH
+Market rate:
+1.1675147317 ETH/rETH
+Current basis:
+-40.50 bp
+24h minimum:
+-40.50 bp
+24h maximum:
+-40.46 bp
+€500 executable basis:
+-40.46 bp
+€1,000 executable basis:
+-40.50 bp
+Signals today:
+0
+Hypothetical trades:
+0
+Hypothetical P&L:
+€+0.00
+Cumulative P&L:
+€+0.00
