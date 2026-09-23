@@ -1,0 +1,29 @@
+[Unit]
+Description=rETH Basis Research Daemon (read-only market observer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=REPLACE_USER
+Group=REPLACE_USER
+WorkingDirectory=REPLACE_ROOT
+Environment=PYTHONPATH=REPLACE_ROOT
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-REPLACE_ROOT/.env
+ExecStart=REPLACE_ROOT/.venv/bin/python -m src.main
+Restart=always
+RestartSec=15
+# Soft limits — research daemon, not trading
+Nice=10
+
+# Logging
+StandardOutput=append:REPLACE_ROOT/logs/daemon.log
+StandardError=append:REPLACE_ROOT/logs/daemon.err
+
+# Hardening (still read-only Ethereum; no private keys needed)
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
