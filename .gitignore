@@ -6,9 +6,11 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 data/
+logs/
 reports/*.html
 reports/*.png
 reports/*.pdf
+reports/daily_report.txt
 *.db
 *.sqlite
 *.sqlite3

@@ -20,7 +20,7 @@ End goal of this phase: a dataset + backtest that answers whether a systematic r
 ## Quick start
 
 ```bash
-python3.12 -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
@@ -36,6 +36,11 @@ python -m src.main
 # offline synthetic feed
 python -m src.main --demo --once
 ```
+
+### Raspberry Pi (always-on)
+
+See **[docs/RASPBERRY_PI.md](docs/RASPBERRY_PI.md)** for beginner steps:
+`setup_pi.sh` + systemd auto-start on boot.
 
 ## Environment
 
