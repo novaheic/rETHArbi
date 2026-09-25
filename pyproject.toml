@@ -29,6 +29,7 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 
 [project.scripts]
 reth-basis = "src.main:cli"
+reth-dashboard = "src.dashboard.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -14,7 +14,7 @@ sudo apt-get install -y -qq \
   python3-dev \
   build-essential \
   git \
-  libatlas-base-dev \
+  libopenblas-dev \
   gfortran
 
 PY="$(command -v python3)"
@@ -47,9 +47,11 @@ Setup complete.
 
 Next steps:
   1. (Optional) Edit .env:  nano .env
-  2. Install the auto-start service:
+  2. Install auto-start (daemon + dashboard):
        sudo ./scripts/install_pi_service.sh
-  3. Or run manually:
+  3. Open the check-in dashboard from your PC:
+       http://$(hostname).local:8080
+  4. Or run manually:
        source .venv/bin/activate
        python -m src.main
 

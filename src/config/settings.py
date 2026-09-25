@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     demo_mode: bool = Field(default=False, alias="DEMO_MODE")
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     reports_dir: Path = Field(default=ROOT / "reports", alias="REPORTS_DIR")
+    dashboard_host: str = Field(default="0.0.0.0", alias="DASHBOARD_HOST")
+    dashboard_port: int = Field(default=8080, alias="DASHBOARD_PORT")
 
     # Contracts (official Rocket Pool / Uniswap mainnet)
     reth_address: str = "0xae78736Cd615f374D3085123A210448E74Fc6393"

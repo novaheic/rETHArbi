@@ -35,12 +35,17 @@ python -m src.main
 
 # offline synthetic feed
 python -m src.main --demo --once
+
+# LAN check-in dashboard (charts + strategy stats)
+python -m src.dashboard
+# open http://localhost:8080
 ```
 
 ### Raspberry Pi (always-on)
 
 See **[docs/RASPBERRY_PI.md](docs/RASPBERRY_PI.md)** for beginner steps:
-`setup_pi.sh` + systemd auto-start on boot.
+`setup_pi.sh` + systemd auto-start (daemon + dashboard) on boot.
+Open `http://rethpi.local:8080` from your PC for live charts.
 
 ## Environment
 
@@ -53,6 +58,7 @@ See **[docs/RASPBERRY_PI.md](docs/RASPBERRY_PI.md)** for beginner steps:
 | `CAPITAL_EUR_1` / `CAPITAL_EUR_2` | Paper capital (€500 / €1,000) |
 | `TRADE_SIZES_EUR` | Liquidity curve sizes |
 | `DEMO_MODE` | Synthetic data, no RPC |
+| `DASHBOARD_HOST` / `DASHBOARD_PORT` | LAN check-in UI bind (default `0.0.0.0:8080`) |
 
 Official rETH contract (hard-coded from Rocket Pool docs):
 
@@ -85,9 +91,16 @@ cd docker && docker compose up -d db
 
 ## Reports
 
-After each cycle:
+Primary check-in UI (reads the SQLite DB live):
 
-- `reports/dashboard.html` — live snapshot
+```bash
+python -m src.dashboard
+# http://localhost:8080  (or http://rethpi.local:8080 on the Pi)
+```
+
+Also written each cycle:
+
+- `reports/dashboard.html` — static snapshot fallback
 - `reports/daily_report.txt` — text daily report
 
 ## Tests

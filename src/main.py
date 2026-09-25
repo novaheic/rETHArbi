@@ -141,6 +141,17 @@ class Daemon:
             self._pnl_today += trade.net_pnl_eur or 0.0
             self._pnl_cum += trade.net_pnl_eur or 0.0
 
+        # Durable equity history for check-in dashboard (small key set)
+        cap2 = settings.capital_eur_2
+        for key in (
+            f"A_entry-30_exit0_€{cap2:.0f}",
+            f"0_hold_eth_€{cap2:.0f}",
+            f"0_hold_reth_€{cap2:.0f}",
+        ):
+            port = self.simulator.portfolios.get(key)
+            if port is not None:
+                await self.db.save_portfolio(port.snapshot(protocol.timestamp))
+
         self.health.record_success()
 
         print("=" * 60)

@@ -1,0 +1,26 @@
+[Unit]
+Description=rETH Basis Research Dashboard (LAN check-in UI)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=REPLACE_USER
+Group=REPLACE_USER
+WorkingDirectory=REPLACE_ROOT
+Environment=PYTHONPATH=REPLACE_ROOT
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-REPLACE_ROOT/.env
+ExecStart=REPLACE_ROOT/.venv/bin/python -m src.dashboard
+Restart=always
+RestartSec=10
+Nice=10
+
+StandardOutput=append:REPLACE_ROOT/logs/dashboard.log
+StandardError=append:REPLACE_ROOT/logs/dashboard.err
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

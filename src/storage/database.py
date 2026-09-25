@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 from sqlalchemy import (
     Boolean,
@@ -15,9 +15,10 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    func,
     select,
 )
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from src.config import Settings
@@ -333,3 +334,304 @@ class Database:
                 select(BasisObservationRow).order_by(BasisObservationRow.id.desc()).limit(limit)
             )
             return list(result.scalars())
+
+    @staticmethod
+    def _window_start(window: str) -> Optional[datetime]:
+        now = datetime.now(timezone.utc)
+        mapping = {
+            "24h": timedelta(hours=24),
+            "7d": timedelta(days=7),
+            "30d": timedelta(days=30),
+            "all": None,
+        }
+        delta = mapping.get(window, timedelta(days=7))
+        return None if delta is None else now - delta
+
+    @staticmethod
+    def _downsample(rows: list[Any], max_points: int = 800) -> list[Any]:
+        if len(rows) <= max_points:
+            return rows
+        step = max(1, len(rows) // max_points)
+        sampled = rows[::step]
+        if rows and sampled[-1] is not rows[-1]:
+            sampled.append(rows[-1])
+        return sampled[:max_points]
+
+    async def dashboard_header(self) -> dict[str, Any]:
+        """Latest market snapshot + health-ish counts for the dashboard header."""
+        async with self.session_factory() as session:
+            obs_count = await session.scalar(select(func.count()).select_from(BasisObservationRow))
+            trade_count = await session.scalar(
+                select(func.count())
+                .select_from(SimulatedTradeRow)
+                .where(SimulatedTradeRow.status.like("closed%"))
+            )
+            latest_basis = await session.scalar(
+                select(BasisObservationRow)
+                .where(
+                    BasisObservationRow.direction == "sell_reth",
+                    BasisObservationRow.venue == "uniswap_v3",
+                    BasisObservationRow.trade_size_eur == 1000,
+                )
+                .order_by(BasisObservationRow.id.desc())
+                .limit(1)
+            )
+            if latest_basis is None:
+                latest_basis = await session.scalar(
+                    select(BasisObservationRow)
+                    .where(BasisObservationRow.direction == "sell_reth")
+                    .order_by(BasisObservationRow.id.desc())
+                    .limit(1)
+                )
+            latest_gas = await session.scalar(
+                select(GasPriceRow).order_by(GasPriceRow.id.desc()).limit(1)
+            )
+            latest_protocol = await session.scalar(
+                select(ProtocolRateRow).order_by(ProtocolRateRow.id.desc()).limit(1)
+            )
+            last_write = None
+            for candidate in (
+                latest_basis.timestamp if latest_basis else None,
+                latest_gas.timestamp if latest_gas else None,
+                latest_protocol.timestamp if latest_protocol else None,
+            ):
+                if candidate is not None and (last_write is None or candidate > last_write):
+                    last_write = candidate
+
+            return {
+                "observation_count": int(obs_count or 0),
+                "closed_trade_count": int(trade_count or 0),
+                "protocol_rate": latest_protocol.reth_rate if latest_protocol else None,
+                "market_rate": latest_basis.market_rate if latest_basis else None,
+                "basis_bps": latest_basis.basis_bps if latest_basis else None,
+                "net_edge_bps": latest_basis.net_edge_bps if latest_basis else None,
+                "gas_eur": latest_gas.gas_cost_eur if latest_gas else None,
+                "eth_eur": latest_gas.eth_eur if latest_gas else None,
+                "block_number": (
+                    latest_basis.block_number
+                    if latest_basis
+                    else (latest_protocol.block_number if latest_protocol else None)
+                ),
+                "last_write": last_write.isoformat() if last_write else None,
+                "venue": latest_basis.venue if latest_basis else None,
+                "trade_size_eur": latest_basis.trade_size_eur if latest_basis else None,
+            }
+
+    async def basis_series(
+        self,
+        window: str = "7d",
+        venue: str = "uniswap_v3",
+        sizes: Sequence[float] = (500.0, 1000.0),
+        max_points: int = 800,
+    ) -> list[dict[str, Any]]:
+        start = self._window_start(window)
+        async with self.session_factory() as session:
+            stmt = (
+                select(BasisObservationRow)
+                .where(
+                    BasisObservationRow.direction == "sell_reth",
+                    BasisObservationRow.venue == venue,
+                    BasisObservationRow.trade_size_eur.in_(list(sizes)),
+                )
+                .order_by(BasisObservationRow.timestamp.asc())
+            )
+            if start is not None:
+                stmt = stmt.where(BasisObservationRow.timestamp >= start)
+            rows = list((await session.execute(stmt)).scalars())
+            rows = self._downsample(rows, max_points=max_points)
+            return [
+                {
+                    "timestamp": r.timestamp.isoformat(),
+                    "trade_size_eur": r.trade_size_eur,
+                    "basis_bps": r.basis_bps,
+                    "net_edge_bps": r.net_edge_bps,
+                    "protocol_rate": r.protocol_rate,
+                    "market_rate": r.market_rate,
+                }
+                for r in rows
+            ]
+
+    async def strategy_leaderboard(
+        self,
+        window: str = "7d",
+        limit: int = 25,
+    ) -> list[dict[str, Any]]:
+        start = self._window_start(window)
+        async with self.session_factory() as session:
+            stmt = select(SimulatedTradeRow).where(SimulatedTradeRow.status.like("closed%"))
+            if start is not None:
+                stmt = stmt.where(SimulatedTradeRow.exit_timestamp >= start)
+            rows = list((await session.execute(stmt)).scalars())
+
+        by_strategy: dict[str, list[SimulatedTradeRow]] = {}
+        for row in rows:
+            by_strategy.setdefault(row.strategy, []).append(row)
+
+        board: list[dict[str, Any]] = []
+        for strategy, trades in by_strategy.items():
+            pnls = [t.net_pnl_eur or 0.0 for t in trades]
+            holds = [t.holding_seconds or 0 for t in trades]
+            wins = sum(1 for p in pnls if p > 0)
+            board.append(
+                {
+                    "strategy": strategy,
+                    "n_trades": len(trades),
+                    "total_pnl": round(sum(pnls), 4),
+                    "avg_pnl": round(sum(pnls) / len(pnls), 4) if pnls else 0.0,
+                    "win_rate": round(wins / len(pnls), 4) if pnls else 0.0,
+                    "avg_hold_h": round((sum(holds) / len(holds)) / 3600.0, 2) if holds else 0.0,
+                }
+            )
+        board.sort(key=lambda x: x["total_pnl"], reverse=True)
+        return board[:limit]
+
+    async def recent_trades(self, window: str = "7d", limit: int = 30) -> list[dict[str, Any]]:
+        start = self._window_start(window)
+        async with self.session_factory() as session:
+            stmt = (
+                select(SimulatedTradeRow)
+                .where(SimulatedTradeRow.status.like("closed%"))
+                .order_by(SimulatedTradeRow.exit_timestamp.desc())
+                .limit(limit)
+            )
+            if start is not None:
+                stmt = stmt.where(SimulatedTradeRow.exit_timestamp >= start)
+            rows = list((await session.execute(stmt)).scalars())
+            return [
+                {
+                    "strategy": r.strategy,
+                    "entry_timestamp": r.entry_timestamp.isoformat() if r.entry_timestamp else None,
+                    "exit_timestamp": r.exit_timestamp.isoformat() if r.exit_timestamp else None,
+                    "entry_basis_bps": r.entry_basis_bps,
+                    "exit_basis_bps": r.exit_basis_bps,
+                    "net_pnl_eur": r.net_pnl_eur,
+                    "holding_seconds": r.holding_seconds,
+                    "status": r.status,
+                    "trade_size_eur": r.trade_size_eur,
+                }
+                for r in rows
+            ]
+
+    async def venue_stats(self, window: str = "7d") -> list[dict[str, Any]]:
+        start = self._window_start(window)
+        async with self.session_factory() as session:
+            stmt = select(BasisObservationRow).where(BasisObservationRow.direction == "sell_reth")
+            if start is not None:
+                stmt = stmt.where(BasisObservationRow.timestamp >= start)
+            rows = list((await session.execute(stmt)).scalars())
+
+        groups: dict[tuple[str, float], list[BasisObservationRow]] = {}
+        for row in rows:
+            groups.setdefault((row.venue, row.trade_size_eur), []).append(row)
+
+        out: list[dict[str, Any]] = []
+        for (venue, size), items in sorted(groups.items()):
+            bases = [i.basis_bps for i in items]
+            nets = [i.net_edge_bps for i in items]
+            out.append(
+                {
+                    "venue": venue,
+                    "trade_size_eur": size,
+                    "n": len(items),
+                    "avg_basis_bps": round(sum(bases) / len(bases), 2) if bases else 0.0,
+                    "avg_net_edge_bps": round(sum(nets) / len(nets), 2) if nets else 0.0,
+                    "pct_positive_net": round(
+                        100.0 * sum(1 for n in nets if n > 0) / len(nets), 1
+                    )
+                    if nets
+                    else 0.0,
+                }
+            )
+        return out
+
+    async def cumulative_pnl_series(
+        self,
+        window: str = "7d",
+        top_n: int = 5,
+        max_points: int = 800,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Cumulative net P&L over time for top strategies by total P&L in window."""
+        board = await self.strategy_leaderboard(window=window, limit=top_n)
+        names = [b["strategy"] for b in board]
+        if not names:
+            return {}
+
+        start = self._window_start(window)
+        async with self.session_factory() as session:
+            stmt = (
+                select(SimulatedTradeRow)
+                .where(
+                    SimulatedTradeRow.status.like("closed%"),
+                    SimulatedTradeRow.strategy.in_(names),
+                )
+                .order_by(SimulatedTradeRow.exit_timestamp.asc())
+            )
+            if start is not None:
+                stmt = stmt.where(SimulatedTradeRow.exit_timestamp >= start)
+            rows = list((await session.execute(stmt)).scalars())
+
+        series: dict[str, list[dict[str, Any]]] = {n: [] for n in names}
+        cum: dict[str, float] = {n: 0.0 for n in names}
+        for row in rows:
+            if row.strategy not in cum:
+                continue
+            cum[row.strategy] += row.net_pnl_eur or 0.0
+            ts = row.exit_timestamp or row.entry_timestamp
+            series[row.strategy].append(
+                {"timestamp": ts.isoformat() if ts else None, "cum_pnl": round(cum[row.strategy], 4)}
+            )
+
+        for name, points in list(series.items()):
+            series[name] = self._downsample(points, max_points=max_points)
+        return series
+
+    async def portfolio_series(
+        self,
+        window: str = "7d",
+        strategies: Optional[Sequence[str]] = None,
+        max_points: int = 800,
+    ) -> dict[str, list[dict[str, Any]]]:
+        start = self._window_start(window)
+        async with self.session_factory() as session:
+            stmt = select(PortfolioSnapshotRow).order_by(PortfolioSnapshotRow.timestamp.asc())
+            if start is not None:
+                stmt = stmt.where(PortfolioSnapshotRow.timestamp >= start)
+            if strategies:
+                stmt = stmt.where(PortfolioSnapshotRow.strategy.in_(list(strategies)))
+            rows = list((await session.execute(stmt)).scalars())
+
+        out: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            out.setdefault(row.strategy, []).append(
+                {
+                    "timestamp": row.timestamp.isoformat(),
+                    "total_eur": row.total_eur,
+                    "realized_pnl_eur": row.realized_pnl_eur,
+                }
+            )
+        for name, points in list(out.items()):
+            out[name] = self._downsample(points, max_points=max_points)
+        return out
+
+    async def load_dashboard_payload(self, window: str = "7d") -> dict[str, Any]:
+        header = await self.dashboard_header()
+        series = await self.basis_series(window=window)
+        board = await self.strategy_leaderboard(window=window)
+        trades = await self.recent_trades(window=window)
+        venues = await self.venue_stats(window=window)
+        cum_pnl = await self.cumulative_pnl_series(window=window)
+        portfolios = await self.portfolio_series(window=window)
+        return {
+            "window": window,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "header": header,
+            "basis_series": series,
+            "strategy_leaderboard": board,
+            "recent_trades": trades,
+            "venue_stats": venues,
+            "cumulative_pnl": cum_pnl,
+            "portfolio_series": portfolios,
+            "paper_disclaimer": (
+                "Paper / hypothetical only — read-only research. No private keys. No live trading."
+            ),
+        }
